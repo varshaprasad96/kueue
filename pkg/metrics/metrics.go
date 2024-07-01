@@ -228,6 +228,25 @@ If the ClusterQueue has a weight of zero, this will return 9223372036854775807,
 the maximum possible share value.`,
 		}, []string{"cluster_queue"},
 	)
+
+	LocalQueuePendingWorkloads = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Subsystem: constants.KueueName,
+			Name:      "localqueue_pending_workloads",
+			Help: `The number of pending workloads, per 'local_queue' and 'status'.
+'status' can have the following values:
+- "active" means that the workloads are in the admission queue.
+- "inadmissible" means there was a failed admission attempt for these workloads and they won't be retried until cluster conditions, which could make this workload admissible, change`,
+		}, []string{"local_queue", "namespace", "status"},
+	)
+
+	LocalQueueResourceUsage = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Subsystem: constants.KueueName,
+			Name:      "localqueue_queue_resource_usage",
+			Help:      `Reports the local_queue's total resource usage within all the flavors`,
+		}, []string{"local_queue", "namespace", "flavor", "resource"},
+	)
 )
 
 func generateExponentialBuckets(count int) []float64 {
@@ -258,6 +277,12 @@ func ReportPendingWorkloads(cqName string, active, inadmissible int) {
 	PendingWorkloads.WithLabelValues(cqName, PendingStatusInadmissible).Set(float64(inadmissible))
 }
 
+// TODO: Probably need to expose the selector too as a part of the label?
+func ReportPendingWorkloadsForLocalQueue(lqName, namespace string, active, inadmissible int) {
+	LocalQueuePendingWorkloads.WithLabelValues(lqName, namespace, PendingStatusActive).Set(float64(active))
+	LocalQueuePendingWorkloads.WithLabelValues(lqName, namespace, PendingStatusInadmissible).Set(float64(inadmissible))
+}
+
 func ReportEvictedWorkloads(cqName, reason string) {
 	EvictedWorkloadsTotal.WithLabelValues(cqName, reason).Inc()
 }
@@ -283,6 +308,10 @@ func ReportClusterQueueStatus(cqName string, cqStatus ClusterQueueStatus) {
 	}
 }
 
+func ClearLocalQueueMetrics(lqName, namespace string) {
+	LocalQueuePendingWorkloads.WithLabelValues(lqName, namespace)
+}
+
 func ClearCacheMetrics(cqName string) {
 	ReservingActiveWorkloads.DeleteLabelValues(cqName)
 	AdmittedActiveWorkloads.DeleteLabelValues(cqName)
@@ -305,6 +334,10 @@ func ReportClusterQueueResourceReservations(cohort, queue, flavor, resource stri
 
 func ReportClusterQueueResourceUsage(cohort, queue, flavor, resource string, usage float64) {
 	ClusterQueueResourceUsage.WithLabelValues(cohort, queue, flavor, resource).Set(usage)
+}
+
+func ReportLocalQueueResourceUsage(queue, namespace, flavor, resource string, usage float64) {
+	LocalQueueResourceUsage.WithLabelValues(queue, namespace, flavor, resource).Set(usage)
 }
 
 func ReportClusterQueueWeightedShare(cq string, weightedShare int64) {
@@ -387,5 +420,7 @@ func Register() {
 		ClusterQueueResourceBorrowingLimit,
 		ClusterQueueResourceLendingLimit,
 		ClusterQueueWeightedShare,
+		LocalQueuePendingWorkloads,
+		LocalQueueResourceUsage,
 	)
 }

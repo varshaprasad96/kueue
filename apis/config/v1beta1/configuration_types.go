@@ -142,6 +142,27 @@ type ControllerMetrics struct {
 	// metrics will be reported.
 	// +optional
 	EnableClusterQueueResources bool `json:"enableClusterQueueResources,omitempty"`
+
+	// EnableLocalQueueResources, if true the local queue resource usage and quotas
+	// metrics will be reported.
+	// +optional
+	EnableLocalQueueResources bool `json:"enableLocalQueueResources"`
+
+	// LocalQueueMetricConfig specifies the configuration for local queue metrics.
+	// +optional
+	LocalQueueMetricConfig metricsConfig `json:"metricsConfig,omitempty"`
+}
+
+// TODO (remove): It would be nice to have a common metrics config to cluster
+// and local queue. This struct can further be expanded, to introduce selectors
+// for local queues which need metrics enabled.
+// A change in this config, will require the stale system metrics to be cleared.
+type metricsConfig struct {
+	// LabelSelector is used to filter the localqueues which need their
+	// metrics to be reported. An empty label selector indicates
+	// that all localqueues in those namespaces will be accepted.
+	// +optional
+	NamespaceConfig map[string]*metav1.LabelSelector `json:"namespaceConfig,omitempty"`
 }
 
 // ControllerHealth defines the health configs.

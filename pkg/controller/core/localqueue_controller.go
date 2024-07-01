@@ -24,6 +24,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
@@ -40,7 +41,9 @@ import (
 	"sigs.k8s.io/kueue/pkg/cache"
 	"sigs.k8s.io/kueue/pkg/constants"
 	"sigs.k8s.io/kueue/pkg/controller/core/indexer"
+	"sigs.k8s.io/kueue/pkg/metrics"
 	"sigs.k8s.io/kueue/pkg/queue"
+	"sigs.k8s.io/kueue/pkg/util/resource"
 )
 
 const (
@@ -56,20 +59,48 @@ const (
 
 // LocalQueueReconciler reconciles a LocalQueue object
 type LocalQueueReconciler struct {
-	client     client.Client
-	log        logr.Logger
-	queues     *queue.Manager
-	cache      *cache.Cache
-	wlUpdateCh chan event.GenericEvent
+	client                  client.Client
+	log                     logr.Logger
+	queues                  *queue.Manager
+	cache                   *cache.Cache
+	reportLocalQueueMetrics bool
+	localQueueMetricsConfig map[string]*metav1.LabelSelector
+	wlUpdateCh              chan event.GenericEvent
 }
 
-func NewLocalQueueReconciler(client client.Client, queues *queue.Manager, cache *cache.Cache) *LocalQueueReconciler {
+// ClusterQueueReconcilerOption configures the reconciler.
+type LocalClusterQueueReconcilerOption func(*LocalClusterQueueReconcilerOptions)
+
+type LocalClusterQueueReconcilerOptions struct {
+	localQueueMetrics bool
+	namespaceCongig   map[string]*metav1.LabelSelector
+}
+
+func WithLocalQueueReportResourceMetrics(report bool) LocalClusterQueueReconcilerOption {
+	return func(lcqro *LocalClusterQueueReconcilerOptions) {
+		lcqro.localQueueMetrics = report
+	}
+}
+
+func WithMetricsNamespaceConfig(config map[string]*metav1.LabelSelector) LocalClusterQueueReconcilerOption {
+	return func(lcqro *LocalClusterQueueReconcilerOptions) {
+		lcqro.namespaceCongig = config
+	}
+}
+
+func NewLocalQueueReconciler(client client.Client, queues *queue.Manager, cache *cache.Cache, opts ...LocalClusterQueueReconcilerOption) *LocalQueueReconciler {
+	lcqoptions := LocalClusterQueueReconcilerOptions{}
+	for _, opt := range opts {
+		opt(&lcqoptions)
+	}
 	return &LocalQueueReconciler{
-		log:        ctrl.Log.WithName("localqueue-reconciler"),
-		queues:     queues,
-		cache:      cache,
-		client:     client,
-		wlUpdateCh: make(chan event.GenericEvent, updateChBuffer),
+		log:                     ctrl.Log.WithName("localqueue-reconciler"),
+		queues:                  queues,
+		cache:                   cache,
+		client:                  client,
+		reportLocalQueueMetrics: lcqoptions.localQueueMetrics,
+		localQueueMetricsConfig: lcqoptions.namespaceCongig,
+		wlUpdateCh:              make(chan event.GenericEvent, updateChBuffer),
 	}
 }
 
@@ -142,7 +173,39 @@ func (r *LocalQueueReconciler) Create(e event.CreateEvent) bool {
 		log.Error(err, "Failed to add localQueue to the cache")
 	}
 
+	recordMetrics, err := r.shouldReportLocalQueueMetrics(q)
+	if err != nil {
+		log.Error(err, "Failed to verify if metrics need to be collected")
+	}
+
+	if recordMetrics {
+		recordLocalQueueMetrics(q)
+	}
+
 	return true
+}
+
+func (r *LocalQueueReconciler) shouldReportLocalQueueMetrics(q *kueue.LocalQueue) (bool, error) {
+	if q == nil || !r.reportLocalQueueMetrics {
+		return false, nil
+	}
+
+	// If there is no specific local queue metrics config, default to reporting metrics
+	if r.localQueueMetricsConfig == nil {
+		return true, nil
+	}
+
+	sel, exists := r.localQueueMetricsConfig[q.GetNamespace()]
+	if !exists {
+		return false, nil
+	}
+
+	selector, err := metav1.LabelSelectorAsSelector(sel)
+	if err != nil {
+		return false, err
+	}
+
+	return selector.Matches(labels.Set(q.GetLabels())), nil
 }
 
 func (r *LocalQueueReconciler) Delete(e event.DeleteEvent) bool {
@@ -341,4 +404,14 @@ func (r *LocalQueueReconciler) UpdateStatusIfChanged(
 		return r.client.Status().Update(ctx, queue)
 	}
 	return nil
+}
+
+func recordLocalQueueMetrics(lq *kueue.LocalQueue) {
+	for fui := range lq.Status.FlavorUsage {
+		fu := &lq.Status.FlavorUsage[fui]
+		for ri := range fu.Resources {
+			r := &fu.Resources[ri]
+			metrics.ReportLocalQueueResourceUsage(lq.Name, lq.Namespace, string(fu.Name), string(r.Name), resource.QuantityToFloat(&r.Total))
+		}
+	}
 }
