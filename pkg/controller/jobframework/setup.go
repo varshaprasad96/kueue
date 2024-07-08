@@ -23,6 +23,7 @@ import (
 	"os"
 	"strings"
 	"time"
+
 	// "unsafe"
 
 	"github.com/jinzhu/inflection"
@@ -56,9 +57,10 @@ var (
 // this function needs to be called after the certs get ready because the controllers won't work
 // until the webhooks are operating, and the webhook won't work until the
 // certs are all in place.
-func SetupControllers(mgr ctrl.Manager, log logr.Logger, cancel context.CancelFunc, opts ...Option) error {
+func SetupControllers(ctx context.Context, mgr ctrl.Manager, log logr.Logger, opts ...Option) error {
 	options := ProcessOptions(opts...)
 
+	watchCtx, watchCancel := context.WithCancel(ctx)
 	for fwkName := range options.EnabledExternalFrameworks {
 		externalFrameworks := append(externalFrameworks, fwkName)
 		log.Info("Registered external job types", "externalFrameworks", externalFrameworks) // DEBUG LOG
@@ -72,6 +74,7 @@ func SetupControllers(mgr ctrl.Manager, log logr.Logger, cancel context.CancelFu
 		log.Info("unable to create dynamic client")
 	}
 	return ForEachIntegration(func(name string, cb IntegrationCallbacks) error {
+		fmt.Println("checking integration!!!!")
 		regularFrameworks := append(regularFrameworks, name)
 		log.Info("Registered regular job types", "regularFrameworks", regularFrameworks) // DEBUG LOG
 		logger := log.WithValues("jobFrameworkName", name)
@@ -93,11 +96,12 @@ func SetupControllers(mgr ctrl.Manager, log logr.Logger, cancel context.CancelFu
 					return fmt.Errorf("%s: %w", fwkNamePrefix, err)
 				}
 				logger.Info("No matching API in the server for job framework, skipped setup of controller and webhook")
-				go waitForAPI(context.Background(), dynClient, logger, gvk, func() {
+				go waitForAPI(watchCtx, dynClient, logger, gvk, func() {
 					log.Info("API now available, triggering restart of Kueue controller")
-					cancel()
+					watchCancel()
 				})
 			} else {
+				fmt.Println("starting reconciler")
 				if err = cb.NewReconciler(
 					mgr.GetClient(),
 					mgr.GetEventRecorderFor(fmt.Sprintf("%s-%s-controller", name, options.ManagerName)),
@@ -121,7 +125,7 @@ func SetupControllers(mgr ctrl.Manager, log logr.Logger, cancel context.CancelFu
 
 func waitForAPI(ctx context.Context, dynClient *dynamic.DynamicClient, log logr.Logger, gvk schema.GroupVersionKind, action func()) {
 
-
+	fmt.Println("calling wait for API")
 	// Determine the resource GVR (GroupVersionResource) from the GVK
 	gvr := schema.GroupVersionResource{Group: gvk.Group, Version: gvk.Version, Resource: strings.ToLower(inflection.Plural(gvk.Kind))}
 
@@ -163,6 +167,7 @@ func waitForAPI(ctx context.Context, dynClient *dynamic.DynamicClient, log logr.
 	// 		log.Info("Event received", "type", event.Type)
 	// 		log.Info("Event received", "type", event)
 	// 	}
+	// }
 	// 	select {
 	// 	case <-ctx.Done():
 	// 		log.Info(fmt.Sprint("Context cancelled, stopping watcher for API ", "gvk", gvk))
