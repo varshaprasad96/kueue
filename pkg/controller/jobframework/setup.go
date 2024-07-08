@@ -21,15 +21,27 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
+	"time"
+	// "unsafe"
+
+	"github.com/jinzhu/inflection"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/dynamic"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
 	"sigs.k8s.io/kueue/pkg/controller/jobs/noop"
 )
+
+var externalFrameworks []string
+var regularFrameworks []string
 
 var (
 	errFailedMappingResource = errors.New("restMapper failed mapping resource")
@@ -44,15 +56,24 @@ var (
 // this function needs to be called after the certs get ready because the controllers won't work
 // until the webhooks are operating, and the webhook won't work until the
 // certs are all in place.
-func SetupControllers(mgr ctrl.Manager, log logr.Logger, opts ...Option) error {
+func SetupControllers(mgr ctrl.Manager, log logr.Logger, cancel context.CancelFunc, opts ...Option) error {
 	options := ProcessOptions(opts...)
 
 	for fwkName := range options.EnabledExternalFrameworks {
+		externalFrameworks := append(externalFrameworks, fwkName)
+		log.Info("Registered external job types", "externalFrameworks", externalFrameworks) // DEBUG LOG
 		if err := RegisterExternalJobType(fwkName); err != nil {
 			return err
 		}
 	}
+	// Create a dynamic client to interact with the Kubernetes API
+	dynClient, err := dynamic.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		log.Info("unable to create dynamic client")
+	}
 	return ForEachIntegration(func(name string, cb IntegrationCallbacks) error {
+		regularFrameworks := append(regularFrameworks, name)
+		log.Info("Registered regular job types", "regularFrameworks", regularFrameworks) // DEBUG LOG
 		logger := log.WithValues("jobFrameworkName", name)
 		fwkNamePrefix := fmt.Sprintf("jobFrameworkName %q", name)
 
@@ -72,6 +93,10 @@ func SetupControllers(mgr ctrl.Manager, log logr.Logger, opts ...Option) error {
 					return fmt.Errorf("%s: %w", fwkNamePrefix, err)
 				}
 				logger.Info("No matching API in the server for job framework, skipped setup of controller and webhook")
+				go waitForAPI(context.Background(), dynClient, logger, gvk, func() {
+					log.Info("API now available, triggering restart of Kueue controller")
+					cancel()
+				})
 			} else {
 				if err = cb.NewReconciler(
 					mgr.GetClient(),
@@ -92,6 +117,68 @@ func SetupControllers(mgr ctrl.Manager, log logr.Logger, opts ...Option) error {
 		}
 		return nil
 	})
+}
+
+func waitForAPI(ctx context.Context, dynClient *dynamic.DynamicClient, log logr.Logger, gvk schema.GroupVersionKind, action func()) {
+
+
+	// Determine the resource GVR (GroupVersionResource) from the GVK
+	gvr := schema.GroupVersionResource{Group: gvk.Group, Version: gvk.Version, Resource: strings.ToLower(inflection.Plural(gvk.Kind))}
+
+	gvr.Resource = strings.ToLower(inflection.Plural(gvk.Kind))
+	log.Info(fmt.Sprintf("Resource GVR: %v", gvr))
+
+	resourceInterface := dynClient.Resource(gvr).Namespace(metav1.NamespaceAll)
+
+	// Log and set up a watch if the resource is not available
+	log.Info(fmt.Sprintf("API %v not available, setting up retry watcher", gvk))
+
+	setupWatch := func() (watch.Interface, error) {
+		return resourceInterface.Watch(ctx, metav1.ListOptions{})
+	}
+
+	var watchInterface watch.Interface
+	var err error
+	for {
+		watchInterface, err = setupWatch()
+		if err != nil {
+			log.Error(err, "Unable to create watcher, retrying...")
+			select {
+			case <-ctx.Done():
+				log.Info(fmt.Sprint("Context cancelled!!!, stopping watcher for API ", "gvk", gvk))
+				return
+			case <-time.After(time.Second * 10):
+				continue
+			}
+		}
+		break
+	}
+
+	defer watchInterface.Stop()
+	log.Info(fmt.Sprint("Created Watcher successfully for API ", "gvk ", gvk))
+	action()
+	// for {
+	// 	log.Info("HELLOOOOOOO")
+	// 	for event := range watchInterface.ResultChan() {
+	// 		log.Info("Event received", "type", event.Type)
+	// 		log.Info("Event received", "type", event)
+	// 	}
+	// 	select {
+	// 	case <-ctx.Done():
+	// 		log.Info(fmt.Sprint("Context cancelled, stopping watcher for API ", "gvk", gvk))
+	// 		return
+	// 	case event := <-watchInterface.ResultChan():
+	// 		log.Info(fmt.Sprintf("Received event type: %v", event.Type))
+	// 		switch event.Type {
+	// 		case watch.Error:
+	// 			log.Info(fmt.Sprintf("Error watching for API %v", gvk))
+	// 		case watch.Added, watch.Modified:
+	// 			log.Info(fmt.Sprintf("API %v installed, invoking deferred action", gvk))
+	// 			action()
+	// 			return
+	// 		}
+	// 	}
+	// }
 }
 
 // SetupIndexes setups the indexers for integrations.
