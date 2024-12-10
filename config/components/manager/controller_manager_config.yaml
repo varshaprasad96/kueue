@@ -36,8 +36,8 @@ clientConnection:
 #managedJobsNamespaceSelector:
 #  matchLabels:
 #    kueue-managed: "true"
-#internalCertManagement:
-#  enable: false
+internalCertManagement:
+  enable: false
 #  webhookServiceName: ""
 #  webhookSecretName: ""
 integrations:
