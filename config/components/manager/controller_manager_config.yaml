@@ -36,10 +36,10 @@ clientConnection:
 #managedJobsNamespaceSelector:
 #  matchLabels:
 #    kueue-managed: "true"
-#internalCertManagement:
-#  enable: false
-#  webhookServiceName: ""
-#  webhookSecretName: ""
+internalCertManagement:
+  enable: false
+  webhookServiceName: "kueue-webhook-service"
+  webhookSecretName: "webhook-server-cert"
 integrations:
   frameworks:
   - "batch/job"
