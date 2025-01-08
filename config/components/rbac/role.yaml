@@ -18,11 +18,29 @@ rules:
   resources:
   - limitranges
   - namespaces
-  - nodes
   verbs:
   - get
   - list
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - nodes/status
+  verbs:
+  - get
+  - patch
+  - update
 - apiGroups:
   - ""
   resources:

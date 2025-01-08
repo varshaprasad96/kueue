@@ -37,9 +37,20 @@ type SetupOptions struct {
 	workerLostTimeout time.Duration
 	eventsBatchPeriod time.Duration
 	adapters          map[string]jobframework.MultiKueueAdapter
+	virtualNode       bool
 }
 
 type SetupOption func(o *SetupOptions)
+
+// WithVirtualNode - creates a virtual node in the management cluster
+// to be able to schedule underlying pods.
+// Adding it as an option here, so that we can later expand to input node
+// specs from the user if required.
+func WithVirtualNode() SetupOption {
+	return func(o *SetupOptions) {
+		o.virtualNode = true
+	}
+}
 
 // WithGCInterval - sets the interval between two garbage collection runs.
 // If 0 the garbage collection is disabled.
@@ -112,6 +123,12 @@ func SetupControllers(mgr ctrl.Manager, namespace string, opts ...SetupOption) e
 
 	acRec := newACReconciler(mgr.GetClient(), helper)
 	err = acRec.setupWithManager(mgr)
+	if err != nil {
+		return err
+	}
+
+	vNodeController := NewVirtualNodeReconciler(mgr.GetClient())
+	err = vNodeController.SetupWithManager(mgr)
 	if err != nil {
 		return err
 	}
